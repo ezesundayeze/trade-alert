@@ -3,11 +3,12 @@ import time
 import os
 from datetime import datetime, timedelta
 from collections import deque
+from statistics import mean
 
 COIN_ID = "sui"
 VS_CURRENCY = "usd"
 TARGET_PERCENT = 5
-CHECK_INTERVAL = 60*15  # seconds
+CHECK_INTERVAL = 60 * 15  # seconds
 SUMMARY_INTERVAL_HOURS = 1
 
 PUSHOVER_USER_KEY = os.environ.get("PUSHOVER_USER_KEY")
@@ -18,29 +19,32 @@ last_alert_price = None
 last_summary_time = datetime.now() - timedelta(hours=24)
 price_history = deque(maxlen=10)
 
+
 def fetch_price_data():
     url = f"https://api.coingecko.com/api/v3/coins/{COIN_ID}?localization=false&tickers=false&market_data=true"
     try:
         response = requests.get(url)
-        data = response.json()
-        price = data["market_data"]["current_price"][VS_CURRENCY]
-        percent_1h = data["market_data"].get("price_change_percentage_1h_in_currency", {}).get(VS_CURRENCY, 0)
-        percent_24h = data["market_data"].get("price_change_percentage_24h_in_currency", {}).get(VS_CURRENCY, 0)
-        percent_7d = data["market_data"].get("price_change_percentage_7d_in_currency", {}).get(VS_CURRENCY, 0)
-        return price, percent_1h, percent_24h, percent_7d
+        data = response.json()["market_data"]
+        return (
+            data["current_price"][VS_CURRENCY],
+            data.get("price_change_percentage_1h_in_currency", {}).get(VS_CURRENCY, 0),
+            data.get("price_change_percentage_24h_in_currency", {}).get(VS_CURRENCY, 0),
+            data.get("price_change_percentage_7d_in_currency", {}).get(VS_CURRENCY, 0),
+        )
     except Exception as e:
         print(f"Error fetching data: {e}")
         return None, None, None, None
 
+
 def analyze_trend(price, p1h, p24h, p7d):
     if p1h > 1 and p24h > 2:
         return f"🟢 Uptrend: 1h +{p1h:.2f}%, 24h +{p24h:.2f}% — {COIN_ID.upper()} gaining."
-    elif p1h < -1 and p24h > 2:
+    if p1h < -1 and p24h > 2:
         return f"🟡 Pullback: 1h {p1h:.2f}% drop, but 24h +{p24h:.2f}% uptrend continues."
-    elif p24h < 0 and p7d < 0:
+    if p24h < 0 and p7d < 0:
         return f"🔴 Downtrend: 24h {p24h:.2f}%, 7d {p7d:.2f}% — avoid buying now."
-    else:
-        return f"⚪ Sideways: 1h {p1h:.2f}%, 24h {p24h:.2f}%, 7d {p7d:.2f}%."
+    return f"⚪ Sideways: 1h {p1h:.2f}%, 24h {p24h:.2f}%, 7d {p7d:.2f}%."
+
 
 def predict_next_move():
     if len(price_history) < 5:
@@ -49,48 +53,98 @@ def predict_next_move():
     long_ma = sum(list(price_history)[-5:]) / 5
     if short_ma > long_ma:
         return "📈 Momentum up: short-term prices rising above average."
-    elif short_ma < long_ma:
+    if short_ma < long_ma:
         return "📉 Weakening: short-term prices below average."
     return "- No clear direction."
 
-def notify(message):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] {message}")
-    url = "https://api.pushover.net/1/messages.json"
-    payload = {
-        "token": PUSHOVER_APP_TOKEN,
-        "user": PUSHOVER_USER_KEY,
-        "message": message
-    }
-    try:
-        response = requests.post(url, data=payload)
-        if response.status_code != 200:
-            print(f"Notification error: {response.text}")
-    except Exception as e:
-        print(f"Pushover exception: {e}")
 
-def send_market_alert(price, direction, trend, prediction):
-    notify(f"{direction} {COIN_ID.upper()} at ${price:.4f}")
+def simple_price_prediction(price, p1h, p24h, p7d):
+    """Basic heuristic price projections."""
+    p1d = price * (1 + p24h / 100)
+    p7d = price * (1 + p7d / 100)
+    p30d = price * (1 + (p7d / price - 1) * 4)  # 4× same weekly rate
+    return (
+        f"📊 Prediction:\n"
+        f"1D: ${p1d:.3f} | 7D: ${p7d:.3f} | 30D: ${p30d:.3f}"
+    )
+
+
+def detect_dca_opportunity(price_history):
+    """Signal DCA if price is 10% below recent 5-sample average."""
+    if len(price_history) < 5:
+        return None
+    avg_price = mean(list(price_history)[-5:])
+    curr = price_history[-1]
+    if curr < avg_price * 0.90:
+        return f"💡 DCA opp: current ${curr:.3f} < 90% of avg ${avg_price:.3f}"
+    return None
+
+
+def detect_range_opportunity(price_history, tol=0.03):
+    """Detect tight range, suggest buy/sell levels."""
+    if len(price_history) < 10:
+        return None
+    recent = list(price_history)[-10:]
+    mx, mn = max(recent), min(recent)
+    avg = sum(recent) / len(recent)
+    if (mx - mn) / avg <= tol:
+        buy = mn * 1.01
+        sell = mx * 0.99
+        return (
+            f"📈 Ranging (${mn:.3f}–${mx:.3f}).\n"
+            f"Buy ~${buy:.3f}, Sell ~${sell:.3f}"
+        )
+    return None
+
+
+def detect_breakout(price_history, current_price, n=10, buf=0.005):
+    """Detect breakout above resistance or below support."""
+    if len(price_history) < n:
+        return None
+    recent = list(price_history)[-n:]
+    mx, mn = max(recent), min(recent)
+    if current_price > mx * (1 + buf):
+        return f"🚀 Breakout UP! Above ${mx:.3f} → ${current_price:.3f}"
+    if current_price < mn * (1 - buf):
+        return f"📉 Breakout DOWN! Below ${mn:.3f} → ${current_price:.3f}"
+    return None
+
+
+def notify(msg):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{now}] {msg}")
+    payload = {"token": PUSHOVER_APP_TOKEN, "user": PUSHOVER_USER_KEY, "message": msg}
+    try:
+        r = requests.post("https://api.pushover.net/1/messages.json", data=payload)
+        if r.status_code != 200:
+            print(f"Notify error: {r.text}")
+    except Exception as e:
+        print(f"Pushover error: {e}")
+
+
+def send_market_alert(price, label, trend, prediction):
+    notify(f"{label} {COIN_ID.upper()} @ ${price:.4f}")
     notify(trend)
     if prediction:
         notify(prediction)
 
+
 def send_daily_summary():
-    latest_price = price_history[-1] if price_history else None
-    if not latest_price:
+    if not price_history:
         return
-    p1h, p24h, p7d = fetch_price_data()[1:]  # skip price
-    trend = analyze_trend(latest_price, p1h, p24h, p7d)
-    prediction = predict_next_move()
-    message = f"📊 Daily Summary for {COIN_ID.upper()} — Price: ${latest_price:.4f}\n{trend}"
-    if prediction:
-        message += f"\n{prediction}"
-    notify(message)
+    price = price_history[-1]
+    _, p1h, p24h, p7d = fetch_price_data()
+    t = analyze_trend(price, p1h, p24h, p7d)
+    pred = predict_next_move()
+    msg = f"📊 Summary: {COIN_ID.upper()} @ ${price:.4f}\n{t}"
+    if pred:
+        msg += f"\n{pred}"
+    notify(msg)
+
 
 while True:
-    print(f"[{datetime.now()}] Checking {COIN_ID}...")
+    print(f"[{datetime.now()}] Checking {COIN_ID}…")
     price, p1h, p24h, p7d = fetch_price_data()
-
     if price is None:
         time.sleep(CHECK_INTERVAL)
         continue
@@ -100,26 +154,40 @@ while True:
     if initial_price is None:
         initial_price = price
         last_alert_price = price
-        last_summary_time = datetime.now() - timedelta(days=1)  # force first summary
+        last_summary_time = datetime.now() - timedelta(days=1)
 
-    percent_change = ((price - last_alert_price) / last_alert_price) * 100
-
-    if percent_change >= TARGET_PERCENT:
-        trend = analyze_trend(price, p1h, p24h, p7d)
-        prediction = predict_next_move()
-        send_market_alert(price, f"🎯 +{TARGET_PERCENT}% target hit!", trend, prediction)
+    # price-move alerts
+    pct = (price - last_alert_price) / last_alert_price * 100
+    if pct >= TARGET_PERCENT:
+        tr = analyze_trend(price, p1h, p24h, p7d)
+        pm = predict_next_move()
+        send_market_alert(price, f"🎯 +{TARGET_PERCENT}% hit!", tr, pm)
+        last_alert_price = price
+    elif pct <= -TARGET_PERCENT:
+        tr = analyze_trend(price, p1h, p24h, p7d)
+        pm = predict_next_move()
+        send_market_alert(price, f"📉 -{TARGET_PERCENT}% drop!", tr, pm)
         last_alert_price = price
 
-    elif percent_change <= -TARGET_PERCENT:
-        trend = analyze_trend(price, p1h, p24h, p7d)
-        prediction = predict_next_move()
-        send_market_alert(price, f"📉 Dropped -{TARGET_PERCENT}% — buy signal!", trend, prediction)
-        last_alert_price = price
+    # new features
+    rng = detect_range_opportunity(price_history)
+    if rng:
+        notify(rng)
 
-    # Daily summary every 24 hours
+    brk = detect_breakout(price_history, price)
+    if brk:
+        notify(brk)
+
+    pred = simple_price_prediction(price, p1h, p24h, p7d)
+    notify(pred)
+
+    dca = detect_dca_opportunity(price_history)
+    if dca:
+        notify(dca)
+
+    # periodic summary
     now = datetime.now()
     if now - last_summary_time >= timedelta(hours=SUMMARY_INTERVAL_HOURS):
-
         send_daily_summary()
         last_summary_time = now
 
