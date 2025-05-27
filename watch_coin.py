@@ -7,13 +7,11 @@ from collections import deque
 COIN_ID = "sui"
 VS_CURRENCY = "usd"
 TARGET_PERCENT = 5
-CHECK_INTERVAL = 60  # seconds
+CHECK_INTERVAL = 60*15  # seconds
+SUMMARY_INTERVAL_HOURS = 1
 
 PUSHOVER_USER_KEY = os.environ.get("PUSHOVER_USER_KEY")
 PUSHOVER_APP_TOKEN = os.environ.get("PUSHOVER_APP_TOKEN")
-
-print("App Token:", PUSHOVER_APP_TOKEN)
-print("User Key:", PUSHOVER_USER_KEY)
 
 initial_price = None
 last_alert_price = None
@@ -120,7 +118,8 @@ while True:
 
     # Daily summary every 24 hours
     now = datetime.now()
-    if now - last_summary_time >= timedelta(hours=24):
+    if now - last_summary_time >= timedelta(hours=SUMMARY_INTERVAL_HOURS):
+
         send_daily_summary()
         last_summary_time = now
 
