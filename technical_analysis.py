@@ -67,7 +67,7 @@ def calculate_indicators(ohlc_data):
         rsi_series = TA.RSI(df, period=14)
         macd_df = TA.MACD(df, period_fast=12, period_slow=26, signal=9) # Columns: 'MACD', 'SIGNAL'
         print(f"Debug: macd_df tail:\n{macd_df.tail().to_string()}")
-        bb_df = TA.BBANDS(df, period=20, std_deviation=2.0) # Columns: 'BB_UPPER', 'BB_MIDDLE', 'BB_LOWER'
+        bb_df = TA.BBANDS(df, period=20) # Corrected: std_deviation removed, using finta's default (usually 2.0)
 
         # Extract latest values
         latest_rsi = rsi_series.iloc[-1]
