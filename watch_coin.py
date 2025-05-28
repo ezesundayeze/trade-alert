@@ -192,7 +192,15 @@ while True:
 
     # new features / regular notifications
     # Notify current strategy signal on each check for observation
-    notify(f"🚦 {config.COIN_ID.upper()} Strategy Signal: {strategy_signal} (RSI: {indicators.get('rsi', 'N/A'):.2f}, MACD Hist: {indicators.get('macd_histogram', 'N/A'):.4f})")
+    # Prepare display strings for indicators to avoid formatting errors
+    rsi_val = indicators.get('rsi')  # This can be None if not calculated
+    macd_hist_val = indicators.get('macd_histogram') # This can be None
+
+    rsi_display_str = f"{rsi_val:.2f}" if isinstance(rsi_val, (int, float)) else "N/A"
+    macd_hist_display_str = f"{macd_hist_val:.4f}" if isinstance(macd_hist_val, (int, float)) else "N/A"
+
+    notify_message = f"🚦 {config.COIN_ID.upper()} Strategy Signal: {strategy_signal} (RSI: {rsi_display_str}, MACD Hist: {macd_hist_display_str})"
+    notify(notify_message)
 
     rng = detect_range_opportunity(price_history)
     if rng:
