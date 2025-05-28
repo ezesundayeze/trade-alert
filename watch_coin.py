@@ -4,46 +4,50 @@ import os
 from datetime import datetime, timedelta
 from collections import deque
 from statistics import mean
+# pandas and pandas_ta imports removed as they are no longer used directly in this file.
+# Their usage is encapsulated in technical_analysis.py.
+# HTTP import removed as it's handled by bybit_operations.py
+import argparse
+from bybit_operations import get_bybit_client, get_spot_balance, place_spot_market_order
+from data_sources import fetch_price_data # Import for fetching price data
+from technical_analysis import calculate_indicators, generate_trading_signal, analyze_trend, simple_price_prediction
+import config # Import the new config file
+import os # Ensure os is imported
 
-COIN_ID = "sui"
-VS_CURRENCY = "usd"
-TARGET_PERCENT = 5
-CHECK_INTERVAL = 60 * 60   # seconds
-SUMMARY_INTERVAL_HOURS = 1
+# Load API keys using names from config
+PUSHOVER_USER_KEY = os.environ.get(config.PUSHOVER_USER_KEY_ENV_VAR)
+PUSHOVER_APP_TOKEN = os.environ.get(config.PUSHOVER_APP_TOKEN_ENV_VAR)
+BYBIT_API_KEY = os.environ.get(config.BYBIT_API_KEY_ENV_VAR)
+BYBIT_API_SECRET = os.environ.get(config.BYBIT_API_SECRET_ENV_VAR)
 
-PUSHOVER_USER_KEY = os.environ.get("PUSHOVER_USER_KEY")
-PUSHOVER_APP_TOKEN = os.environ.get("PUSHOVER_APP_TOKEN")
+# Initialize ENABLE_BYBIT_TRADING with the default from config
+ENABLE_BYBIT_TRADING = config.ENABLE_BYBIT_TRADING_DEFAULT
+
+# --- Argument Parsing for Enabling Bybit Trading ---
+parser = argparse.ArgumentParser(description="Cryptocurrency monitoring and trading bot.")
+parser.add_argument(
+    "--enable-bybit",
+    action="store_true",
+    help="Enable Bybit trading functionality. Uses testnet by default (see get_bybit_client). Requires API keys."
+)
+args = parser.parse_args()
+
+if args.enable_bybit:
+    ENABLE_BYBIT_TRADING = True
+    print("Bybit trading has been ENABLED via command-line flag.")
+else:
+    # This else block is important to ensure ENABLE_BYBIT_TRADING respects its default
+    # or a value potentially set by other means if we add more config options later.
+    # For now, it just means it remains what it was defined as globally (False).
+    if ENABLE_BYBIT_TRADING: # If it was True by default (e.g. for testing) and flag not given
+        print("Bybit trading remains ENABLED (defaulted to True, no --enable-bybit flag to override to False, though this flag only enables).")
+    else:
+        print("Bybit trading is DISABLED. Use --enable-bybit flag to enable it.")
 
 initial_price = None
 last_alert_price = None
 last_summary_time = datetime.now() - timedelta(hours=24)
 price_history = deque(maxlen=10)
-
-
-def fetch_price_data():
-    url = f"https://api.coingecko.com/api/v3/coins/{COIN_ID}?localization=false&tickers=false&market_data=true"
-    try:
-        response = requests.get(url)
-        data = response.json()["market_data"]
-        return (
-            data["current_price"][VS_CURRENCY],
-            data.get("price_change_percentage_1h_in_currency", {}).get(VS_CURRENCY, 0),
-            data.get("price_change_percentage_24h_in_currency", {}).get(VS_CURRENCY, 0),
-            data.get("price_change_percentage_7d_in_currency", {}).get(VS_CURRENCY, 0),
-        )
-    except Exception as e:
-        print(f"Error fetching data: {e}")
-        return None, None, None, None
-
-
-def analyze_trend(price, p1h, p24h, p7d):
-    if p1h > 1 and p24h > 2:
-        return f"🟢 Uptrend: 1h +{p1h:.2f}%, 24h +{p24h:.2f}% — {COIN_ID.upper()} gaining."
-    if p1h < -1 and p24h > 2:
-        return f"🟡 Pullback: 1h {p1h:.2f}% drop, but 24h +{p24h:.2f}% uptrend continues."
-    if p24h < 0 and p7d < 0:
-        return f"🔴 Downtrend: 24h {p24h:.2f}%, 7d {p7d:.2f}% — avoid buying now."
-    return f"⚪ Sideways: 1h {p1h:.2f}%, 24h {p24h:.2f}%, 7d {p7d:.2f}%."
 
 
 def predict_next_move():
@@ -56,17 +60,6 @@ def predict_next_move():
     if short_ma < long_ma:
         return "📉 Weakening: short-term prices below average."
     return "- No clear direction."
-
-
-def simple_price_prediction(price, p1h, p24h, p7d):
-    """Basic heuristic price projections."""
-    p1d = price * (1 + p24h / 100)
-    p7d = price * (1 + p7d / 100)
-    p30d = price * (1 + (p7d / price - 1) * 4)  # 4× same weekly rate
-    return (
-        f"📊 Prediction:\n"
-        f"1D: ${p1d:.3f} | 7D: ${p7d:.3f} | 30D: ${p30d:.3f}"
-    )
 
 
 def detect_dca_opportunity(price_history):
@@ -122,73 +115,160 @@ def notify(msg):
         print(f"Pushover error: {e}")
 
 
-def send_market_alert(price, label, trend, prediction):
-    notify(f"{label} {COIN_ID.upper()} @ ${price:.4f}")
+def send_market_alert(price, label, trend, prediction, strategy_signal):
+    notify(f"{label} {config.COIN_ID.upper()} @ ${price:.4f}")
     notify(trend)
     if prediction:
         notify(prediction)
+    notify(f"🚦 Strategy Signal: {strategy_signal}")
 
 
 def send_daily_summary():
     if not price_history:
         return
-    price = price_history[-1]
-    _, p1h, p24h, p7d = fetch_price_data()
+    price_data = fetch_price_data()
+    if not price_data:
+        notify("Error: Could not fetch price data for daily summary.")
+        return
+
+    price = price_data["current_price"]
+    p1h = price_data["p1h"]
+    p24h = price_data["p24h"]
+    p7d = price_data["p7d"]
+    ohlc_data = price_data.get("ohlc") # Get OHLC data for indicators
+
     t = analyze_trend(price, p1h, p24h, p7d)
-    pred = predict_next_move()
-    msg = f"📊 Summary: {COIN_ID.upper()} @ ${price:.4f}\n{t}"
+    pred = predict_next_move() # Existing simple prediction
+    
+    # Calculate indicators and strategy signal for summary
+    indicators = calculate_indicators(ohlc_data)
+    current_strategy_signal = generate_trading_signal(indicators, price)
+
+    msg = f"📊 Summary: {config.COIN_ID.upper()} @ ${price:.4f}\n{t}"
     if pred:
         msg += f"\n{pred}"
+    msg += f"\n🚦 Strategy Signal: {current_strategy_signal}"
     notify(msg)
 
 
 while True:
-    print(f"[{datetime.now()}] Checking {COIN_ID}…")
-    price, p1h, p24h, p7d = fetch_price_data()
-    if price is None:
-        time.sleep(CHECK_INTERVAL)
+    print(f"[{datetime.now()}] Checking {config.COIN_ID}…")
+    price_data = fetch_price_data()
+
+    if price_data is None:
+        # Error already printed by fetch_price_data or no data returned
+        time.sleep(config.CHECK_INTERVAL)
         continue
 
-    price_history.append(price)
+    current_price = price_data["current_price"]
+    p1h = price_data["p1h"]
+    p24h = price_data["p24h"]
+    p7d = price_data["p7d"]
+    ohlc_data = price_data["ohlc"] # This is now available
+
+    price_history.append(current_price)
 
     if initial_price is None:
-        initial_price = price
-        last_alert_price = price
+        initial_price = current_price
+        last_alert_price = current_price
         last_summary_time = datetime.now() - timedelta(days=1)
 
-    # price-move alerts
-    pct = (price - last_alert_price) / last_alert_price * 100
-    if pct >= TARGET_PERCENT:
-        tr = analyze_trend(price, p1h, p24h, p7d)
-        pm = predict_next_move()
-        send_market_alert(price, f"🎯 +{TARGET_PERCENT}% hit!", tr, pm)
-        last_alert_price = price
-    elif pct <= -TARGET_PERCENT:
-        tr = analyze_trend(price, p1h, p24h, p7d)
-        pm = predict_next_move()
-        send_market_alert(price, f"📉 -{TARGET_PERCENT}% drop!", tr, pm)
-        last_alert_price = price
+    # Calculate indicators and strategy signal for each check
+    indicators = calculate_indicators(ohlc_data)
+    strategy_signal = generate_trading_signal(indicators, current_price)
 
-    # new features
+    # price-move alerts
+    pct = (current_price - last_alert_price) / last_alert_price * 100
+    if pct >= config.TARGET_PERCENT:
+        tr = analyze_trend(current_price, p1h, p24h, p7d)
+        pm = predict_next_move()
+        send_market_alert(current_price, f"🎯 +{config.TARGET_PERCENT}% hit!", tr, pm, strategy_signal)
+        last_alert_price = current_price
+    elif pct <= -config.TARGET_PERCENT:
+        tr = analyze_trend(current_price, p1h, p24h, p7d)
+        pm = predict_next_move()
+        send_market_alert(current_price, f"📉 -{config.TARGET_PERCENT}% drop!", tr, pm, strategy_signal)
+        last_alert_price = current_price
+
+    # new features / regular notifications
+    # Notify current strategy signal on each check for observation
+    notify(f"🚦 {config.COIN_ID.upper()} Strategy Signal: {strategy_signal} (RSI: {indicators.get('rsi', 'N/A'):.2f}, MACD Hist: {indicators.get('macd_histogram', 'N/A'):.4f})")
+
     rng = detect_range_opportunity(price_history)
     if rng:
         notify(rng)
 
-    brk = detect_breakout(price_history, price)
+    brk = detect_breakout(price_history, current_price)
     if brk:
         notify(brk)
 
-    pred = simple_price_prediction(price, p1h, p24h, p7d)
+    # Pass the necessary price_data components to simple_price_prediction
+    pred = simple_price_prediction(current_price, p1h, p24h, p7d)
     notify(pred)
 
     dca = detect_dca_opportunity(price_history)
     if dca:
         notify(dca)
 
+    # --- BYBIT TRADING LOGIC ---
+    # !!! --- WARNING: AUTOMATED TRADING IS RISKY --- !!!
+    # The following section implements automated trading on Bybit if enabled.
+    # Ensure you understand the code, the strategy, and the risks involved.
+    # Start with small amounts and use the testnet extensively before live trading.
+    # You are solely responsible for any financial outcomes.
+    # !!! --- WARNING: AUTOMATED TRADING IS RISKY --- !!!
+    if ENABLE_BYBIT_TRADING and strategy_signal in ["BUY", "SELL"]:
+        print(f"Attempting Bybit trade action for signal: {strategy_signal}") # Logging
+        bybit_client = get_bybit_client()
+
+        if bybit_client:
+            # current_price is already available from price_data['current_price'] at the start of the loop
+
+            if strategy_signal == "BUY":
+                quote_currency_balance = get_spot_balance(bybit_client, config.BYBIT_QUOTE_CURRENCY)
+                print(f"Bybit: {config.BYBIT_QUOTE_CURRENCY} balance: {quote_currency_balance}") # Logging
+                if quote_currency_balance >= config.TRADE_SIZE_USD:
+                    quantity_to_buy = config.TRADE_SIZE_USD / current_price
+                    quantity_to_buy = round(quantity_to_buy, 6) # Basic precision handling
+                    
+                    notify(f"Attempting to BUY {quantity_to_buy:.6f} {config.BYBIT_BASE_CURRENCY} on Bybit.")
+                    place_spot_market_order(bybit_client, config.BYBIT_SYMBOL, "Buy", quantity_to_buy, config.BYBIT_QUOTE_CURRENCY, notify)
+                else:
+                    msg = f"Bybit: Insufficient {config.BYBIT_QUOTE_CURRENCY} balance ({quote_currency_balance:.2f}) to buy {config.TRADE_SIZE_USD} USD worth of {config.BYBIT_BASE_CURRENCY}."
+                    print(msg)
+                    notify(msg)
+
+            elif strategy_signal == "SELL":
+                base_currency_balance = get_spot_balance(bybit_client, config.BYBIT_BASE_CURRENCY)
+                print(f"Bybit: {config.BYBIT_BASE_CURRENCY} balance: {base_currency_balance}") # Logging
+                
+                if base_currency_balance > 0:
+                    quantity_equivalent_to_trade_size = config.TRADE_SIZE_USD / current_price
+                    
+                    if base_currency_balance >= quantity_equivalent_to_trade_size:
+                        quantity_to_sell = quantity_equivalent_to_trade_size
+                        msg_sell = f"Attempting to SELL {quantity_to_sell:.6f} {config.BYBIT_BASE_CURRENCY} (approx. {config.TRADE_SIZE_USD} USD) on Bybit."
+                    else:
+                        quantity_to_sell = base_currency_balance # Sell all available if less than TRADE_SIZE_USD worth
+                        msg_sell = f"Attempting to SELL all available {quantity_to_sell:.6f} {config.BYBIT_BASE_CURRENCY} on Bybit."
+                    
+                    quantity_to_sell = round(quantity_to_sell, 6) # Basic precision handling
+                    notify(msg_sell)
+                    place_spot_market_order(bybit_client, config.BYBIT_SYMBOL, "Sell", quantity_to_sell, config.BYBIT_QUOTE_CURRENCY, notify)
+                else:
+                    msg = f"Bybit: No {config.BYBIT_BASE_CURRENCY} balance to sell."
+                    print(msg)
+                    notify(msg)
+        else:
+            msg = "Bybit: Could not connect to Bybit client. Trading actions skipped."
+            print(msg)
+            notify(msg)
+    # --- END OF BYBIT TRADING LOGIC ---
+
     # periodic summary
     now = datetime.now()
-    if now - last_summary_time >= timedelta(hours=SUMMARY_INTERVAL_HOURS):
+    if now - last_summary_time >= timedelta(hours=config.SUMMARY_INTERVAL_HOURS):
         send_daily_summary()
         last_summary_time = now
 
-    time.sleep(CHECK_INTERVAL)
+    time.sleep(config.CHECK_INTERVAL)
