@@ -8,7 +8,7 @@ from statistics import mean
 COIN_ID = "sui"
 VS_CURRENCY = "usd"
 TARGET_PERCENT = 5
-CHECK_INTERVAL = 60 * 15  # seconds
+CHECK_INTERVAL = 60 * 60   # seconds
 SUMMARY_INTERVAL_HOURS = 1
 
 PUSHOVER_USER_KEY = os.environ.get("PUSHOVER_USER_KEY")
