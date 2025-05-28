@@ -2,3 +2,4 @@ requests
 pandas
 pandas-ta
 pybit
+setuptools
