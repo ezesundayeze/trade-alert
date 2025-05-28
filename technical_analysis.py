@@ -1,5 +1,5 @@
 import pandas as pd
-import pandas_ta as ta
+from finta import TA # Replaced pandas_ta with finta
 import config # For any config variables directly used by analysis functions
 
 def analyze_trend(price, p1h, p24h, p7d):
@@ -41,47 +41,63 @@ def calculate_indicators(ohlc_data):
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df = df.set_index('timestamp')
 
-        # Ensure OHLC columns are numeric
+        # Ensure OHLC columns are numeric (finta expects these columns in lowercase)
         for col in ['open', 'high', 'low', 'close']:
             df[col] = pd.to_numeric(df[col], errors='coerce')
 
-        # Drop rows with NaN in OHLC after conversion, if any (should not happen with good data)
+        # Drop rows with NaN in OHLC after conversion
         df.dropna(subset=['open', 'high', 'low', 'close'], inplace=True)
 
-        if len(df) < 20: # Re-check after potential NaN drops
-            print("Warning: Not enough valid OHLC data points after cleaning.")
+        # Ensure enough data after cleaning for the longest period (e.g., 26 for MACD slow, 20 for BB)
+        # Smallest period for finta to return non-NaN for MACD is typically period_slow + signal_period for full MACD.
+        # RSI period 14, BB period 20. MACD slow 26. So, ~26 to 35 data points might be needed.
+        # The initial check for 20 is a bit too low for finta's MACD with default params.
+        # Let's use a slightly higher threshold, e.g., 35, to be safer with finta.
+        print(f"Debug: DataFrame length for TA before length check: {len(df)}")
+        required_data_points = 35 
+        if len(df) < required_data_points:
+            print(f"Warning: Not enough valid OHLC data points ({len(df)}) after cleaning for finta. Need at least {required_data_points}.")
             return {
                 'rsi': None, 'macd_line': None, 'macd_histogram': None, 'macd_signal': None,
                 'bb_lower': None, 'bb_middle': None, 'bb_upper': None
             }
 
-        # Calculate Indicators
-        df.ta.rsi(length=14, append=True) # Appends RSI_14
-        df.ta.macd(fast=12, slow=26, signal=9, append=True) # Appends MACD_12_26_9, MACDh_12_26_9, MACDs_12_26_9
-        df.ta.bbands(length=20, std=2, append=True) # Appends BBL_20_2.0, BBM_20_2.0, BBU_20_2.0
+        # Calculate Indicators using finta
+        # finta methods return Series or DataFrames directly, not appending to df unless assigned.
+        rsi_series = TA.RSI(df, period=14)
+        macd_df = TA.MACD(df, period_fast=12, period_slow=26, signal=9) # Columns: 'MACD', 'SIGNAL'
+        print(f"Debug: macd_df tail:\n{macd_df.tail().to_string()}")
+        bb_df = TA.BBANDS(df, period=20, std_deviation=2.0) # Columns: 'BB_UPPER', 'BB_MIDDLE', 'BB_LOWER'
 
         # Extract latest values
-        latest_rsi = df['RSI_14'].iloc[-1]
-        latest_macd_line = df['MACD_12_26_9'].iloc[-1]
-        latest_macd_histogram = df['MACDh_12_26_9'].iloc[-1]
-        latest_macd_signal = df['MACDs_12_26_9'].iloc[-1]
-        latest_bb_lower = df['BBL_20_2.0'].iloc[-1]
-        latest_bb_middle = df['BBM_20_2.0'].iloc[-1]
-        latest_bb_upper = df['BBU_20_2.0'].iloc[-1]
+        latest_rsi = rsi_series.iloc[-1]
+        
+        latest_macd_line = macd_df['MACD'].iloc[-1]
+        latest_macd_signal = macd_df['SIGNAL'].iloc[-1]
+        print(f"Debug: latest_macd_line: {latest_macd_line}, latest_macd_signal: {latest_macd_signal}")
+        # Manual calculation for MACD Histogram
+        latest_macd_histogram = None
+        if pd.notna(latest_macd_line) and pd.notna(latest_macd_signal):
+            latest_macd_histogram = latest_macd_line - latest_macd_signal
+
+        latest_bb_lower = bb_df['BB_LOWER'].iloc[-1]
+        latest_bb_middle = bb_df['BB_MIDDLE'].iloc[-1]
+        latest_bb_upper = bb_df['BB_UPPER'].iloc[-1]
 
         indicators = {
-            'rsi': None if pd.isna(latest_rsi) else float(latest_rsi),
-            'macd_line': None if pd.isna(latest_macd_line) else float(latest_macd_line),
-            'macd_histogram': None if pd.isna(latest_macd_histogram) else float(latest_macd_histogram),
-            'macd_signal': None if pd.isna(latest_macd_signal) else float(latest_macd_signal),
-            'bb_lower': None if pd.isna(latest_bb_lower) else float(latest_bb_lower),
-            'bb_middle': None if pd.isna(latest_bb_middle) else float(latest_bb_middle),
-            'bb_upper': None if pd.isna(latest_bb_upper) else float(latest_bb_upper),
+            'rsi': float(latest_rsi) if pd.notna(latest_rsi) else None,
+            'macd_line': float(latest_macd_line) if pd.notna(latest_macd_line) else None,
+            'macd_histogram': float(latest_macd_histogram) if pd.notna(latest_macd_histogram) else None,
+            'macd_signal': float(latest_macd_signal) if pd.notna(latest_macd_signal) else None,
+            'bb_lower': float(latest_bb_lower) if pd.notna(latest_bb_lower) else None,
+            'bb_middle': float(latest_bb_middle) if pd.notna(latest_bb_middle) else None,
+            'bb_upper': float(latest_bb_upper) if pd.notna(latest_bb_upper) else None,
         }
         return indicators
 
     except Exception as e:
-        print(f"Error calculating indicators: {e}")
+        print(f"Error calculating indicators with finta: {e}")
+        # Return dict of Nones if any error occurs during calculation
         return {
             'rsi': None, 'macd_line': None, 'macd_histogram': None, 'macd_signal': None,
             'bb_lower': None, 'bb_middle': None, 'bb_upper': None
