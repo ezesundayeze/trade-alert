@@ -58,14 +58,16 @@ def predict_next_move():
     return "- No clear direction."
 
 
-def simple_price_prediction(price, p1h, p24h, p7d):
+def simple_price_prediction(price, p1h, p24h, p7d_percentage): # p7d parameter is the 7-day percentage change
     """Basic heuristic price projections."""
-    p1d = price * (1 + p24h / 100)
-    p7d = price * (1 + p7d / 100)
-    p30d = price * (1 + (p7d / price - 1) * 4)  # 4× same weekly rate
+    p1d_price = price * (1 + p24h / 100)
+    p7d_price = price * (1 + p7d_percentage / 100)  # This calculates the projected price after 7 days
+    # Corrected 30-day prediction: compounds the weekly rate (derived from p7d_percentage) for 4 weeks.
+    # p7d_percentage is the 7-day price change percentage.
+    p30d_price = price * ((1 + p7d_percentage / 100) ** 4)
     return (
         f"📊 Prediction:\n"
-        f"1D: ${p1d:.3f} | 7D: ${p7d:.3f} | 30D: ${p30d:.3f}"
+        f"1D: ${p1d_price:.3f} | 7D: ${p7d_price:.3f} | 30D: ${p30d_price:.3f}"
     )
 
 
