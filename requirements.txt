@@ -1,1 +1,6 @@
 requests
+pandas
+numpy
+finta
+setuptools
+pybit
