@@ -3,7 +3,7 @@ import config
 
 def fetch_price_data():
     market_data_url = f"https://api.coingecko.com/api/v3/coins/{config.COIN_ID}?localization=false&tickers=false&market_data=true"
-    ohlc_url = f"https   ://api.coingecko.com/api/v3/coins/{config.COIN_ID}/ohlc?vs_currency={config.VS_CURRENCY}&days=14"
+    ohlc_url = f"https://api.coingecko.com/api/v3/coins/{config.COIN_ID}/ohlc?vs_currency={config.VS_CURRENCY}&days=14"
 
     results = {}
 

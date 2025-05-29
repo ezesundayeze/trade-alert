@@ -50,6 +50,13 @@ last_summary_time = datetime.now() - timedelta(hours=24)
 price_history = deque(maxlen=10)
 
 
+# Note on `predict_next_move` vs `analyze_trend`:
+# `predict_next_move` reflects very short-term (e.g., 3-5 hour, assuming hourly checks) momentum
+# using spot price moving averages from the local `price_history` deque.
+# Its output can sometimes appear to contradict the broader trend identified by `analyze_trend`
+# (which uses 1-hour, 24-hour, and 7-day percentage changes from the API).
+# This is normal, as short-term bounces or pullbacks can occur within longer-term trends.
+# The two signals provide different timeframe perspectives on market behavior.
 def predict_next_move():
     if len(price_history) < 5:
         return None
@@ -94,6 +101,14 @@ def detect_range_opportunity(price_history, tol=0.03):
     if (mx - mn) / avg <= tol:
         buy = mn * 1.01
         sell = mx * 0.99
+        
+        # If the calculated buy level is greater than or equal to the sell level,
+        # the range is too tight to provide meaningful buy/sell levels with the current percentage buffers.
+        # In such cases, no actionable opportunity is identified.
+        if buy >= sell:
+            print(f"Debug: Range opportunity skipped, range too tight. Buy: {buy:.3f}, Sell: {sell:.3f}, Min: {mn:.3f}, Max: {mx:.3f}")
+            return None  # Range too tight for meaningful buy/sell levels with current buffer
+            
         return (
             f"📈 Ranging (${mn:.3f}–${mx:.3f}).\n"
             f"Buy ~${buy:.3f}, Sell ~${sell:.3f}"
