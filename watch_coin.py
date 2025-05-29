@@ -50,6 +50,13 @@ last_summary_time = datetime.now() - timedelta(hours=24)
 price_history = deque(maxlen=10)
 
 
+# Note on `predict_next_move` vs `analyze_trend`:
+# `predict_next_move` reflects very short-term (e.g., 3-5 hour, assuming hourly checks) momentum
+# using spot price moving averages from the local `price_history` deque.
+# Its output can sometimes appear to contradict the broader trend identified by `analyze_trend`
+# (which uses 1-hour, 24-hour, and 7-day percentage changes from the API).
+# This is normal, as short-term bounces or pullbacks can occur within longer-term trends.
+# The two signals provide different timeframe perspectives on market behavior.
 def predict_next_move():
     if len(price_history) < 5:
         return None
@@ -62,14 +69,25 @@ def predict_next_move():
     return "- No clear direction."
 
 
-def detect_dca_opportunity(price_history):
-    """Signal DCA if price is 10% below recent 5-sample average."""
-    if len(price_history) < 5:
+def detect_dca_opportunity(price_history, indicators):
+    """Signal DCA if price is significantly below recent average, based on ATR."""
+    if len(price_history) < 5: # Need some history for an average
         return None
+    
+    atr = indicators.get('atr')
+    if atr is None or atr == 0:
+        # ATR not available or zero, cannot use ATR-based logic.
+        # Optionally, could fall back to old percentage-based logic here,
+        # but returning None is safer if ATR is expected.
+        print("Debug: DCA check skipped, ATR not available or is zero.")
+        return None
+
     avg_price = mean(list(price_history)[-5:])
     curr = price_history[-1]
-    if curr < avg_price * 0.90:
-        return f"💡 DCA opp: current ${curr:.3f} < 90% of avg ${avg_price:.3f}"
+    
+    # Condition: Current price is more than DCA_ATR_MULTIPLIER * ATR below the average price
+    if curr < avg_price - (config.DCA_ATR_MULTIPLIER * atr):
+        return f"💡 DCA opp (ATR based): current ${curr:.3f} significantly below avg ${avg_price:.3f} (ATR: ${atr:.3f})"
     return None
 
 
@@ -83,6 +101,14 @@ def detect_range_opportunity(price_history, tol=0.03):
     if (mx - mn) / avg <= tol:
         buy = mn * 1.01
         sell = mx * 0.99
+        
+        # If the calculated buy level is greater than or equal to the sell level,
+        # the range is too tight to provide meaningful buy/sell levels with the current percentage buffers.
+        # In such cases, no actionable opportunity is identified.
+        if buy >= sell:
+            print(f"Debug: Range opportunity skipped, range too tight. Buy: {buy:.3f}, Sell: {sell:.3f}, Min: {mn:.3f}, Max: {mx:.3f}")
+            return None  # Range too tight for meaningful buy/sell levels with current buffer
+            
         return (
             f"📈 Ranging (${mn:.3f}–${mx:.3f}).\n"
             f"Buy ~${buy:.3f}, Sell ~${sell:.3f}"
@@ -90,16 +116,26 @@ def detect_range_opportunity(price_history, tol=0.03):
     return None
 
 
-def detect_breakout(price_history, current_price, n=10, buf=0.005):
-    """Detect breakout above resistance or below support."""
+def detect_breakout(price_history, current_price, indicators, n=10):
+    """Detect breakout above resistance or below support using ATR."""
     if len(price_history) < n:
         return None
+
+    atr = indicators.get('atr')
+    if atr is None or atr == 0:
+        # ATR not available or zero, cannot use ATR-based logic.
+        print("Debug: Breakout check skipped, ATR not available or is zero.")
+        return None
+        
     recent = list(price_history)[-n:]
     mx, mn = max(recent), min(recent)
-    if current_price > mx * (1 + buf):
-        return f"🚀 Breakout UP! Above ${mx:.3f} → ${current_price:.3f}"
-    if current_price < mn * (1 - buf):
-        return f"📉 Breakout DOWN! Below ${mn:.3f} → ${current_price:.3f}"
+    
+    # Breakout UP condition: Current price is above max price + BREAKOUT_ATR_MULTIPLIER * ATR
+    if current_price > mx + (config.BREAKOUT_ATR_MULTIPLIER * atr):
+        return f"🚀 Breakout UP (ATR)! Above ${mx:.3f} + ({config.BREAKOUT_ATR_MULTIPLIER}*ATR ${atr:.3f}) → ${current_price:.3f}"
+    # Breakout DOWN condition: Current price is below min price - BREAKOUT_ATR_MULTIPLIER * ATR
+    if current_price < mn - (config.BREAKOUT_ATR_MULTIPLIER * atr):
+        return f"📉 Breakout DOWN (ATR)! Below ${mn:.3f} - ({config.BREAKOUT_ATR_MULTIPLIER}*ATR ${atr:.3f}) → ${current_price:.3f}"
     return None
 
 
@@ -206,7 +242,7 @@ while True:
     if rng:
         notify(rng)
 
-    brk = detect_breakout(price_history, current_price)
+    brk = detect_breakout(price_history, current_price, indicators) # Pass indicators
     if brk:
         notify(brk)
 
@@ -214,7 +250,7 @@ while True:
     pred = simple_price_prediction(current_price, p1h, p24h, p7d)
     notify(pred)
 
-    dca = detect_dca_opportunity(price_history)
+    dca = detect_dca_opportunity(price_history, indicators) # Pass indicators
     if dca:
         notify(dca)
 
