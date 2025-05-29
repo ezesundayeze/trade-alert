@@ -23,3 +23,7 @@ TRADE_SIZE_USD = 10.0                 # Standard trade size in USD
 BYBIT_BASE_CURRENCY = COIN_ID.upper()
 BYBIT_QUOTE_CURRENCY = VS_CURRENCY.upper()
 BYBIT_SYMBOL = f"{BYBIT_BASE_CURRENCY}{BYBIT_QUOTE_CURRENCY}"
+
+# ATR-based dynamic threshold multipliers
+DCA_ATR_MULTIPLIER = 2.0  # For identifying DCA opportunities
+BREAKOUT_ATR_MULTIPLIER = 1.5  # For identifying price breakouts
